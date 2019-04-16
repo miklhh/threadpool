@@ -50,14 +50,14 @@ public:
     explicit ThreadPool(std::size_t threads);
     ~ThreadPool();
 
-    // Test if the pool is doing any work what so ever. Returns true if the all
-    // threads in the pool are free.
+    // Test if pool is doing any work what so ever. Returns false if the all
+    // threads in the pool are considered free.
     bool working() const noexcept;
 
-    // Method for returning the size of the task queue.
+    // Returns current size of task queue.
     std::size_t jobs() const noexcept;
 
-    // Method for returning the amount of threads in the threadpool.
+    // Returns the thread pool thread count.
     std::size_t threadCount() const noexcept;
 
     // Enqueue method.
@@ -120,7 +120,7 @@ inline ThreadPool::ThreadPool(std::size_t workers)
 
     for (std::size_t i = 0; i < workers; ++i)
     {
-        // Launch the threads into the pool.
+        // Launch threads into pool.
         threads.at(i) = std::thread(callback);
     }
 }
@@ -129,9 +129,11 @@ inline ThreadPool::ThreadPool(std::size_t workers)
 inline ThreadPool::~ThreadPool()
 {
     {
-        // Notify all of the threads that is is time to quit their jobs!
+        // Inform threads that no new jobs should be launched.
         std::lock_guard<std::mutex> lock(task_lock);
         running = false;
+
+        // Signal all threads to quit.
         cv.notify_all();
     }
 
@@ -144,9 +146,9 @@ inline ThreadPool::~ThreadPool()
 
 inline bool ThreadPool::working() const noexcept
 {
-    // This yield is an attempt to not let the threadpool user starve the 
-    // threadpool by always holding the 'task_lock'. The user could accidently
-    // do this be having working() in a spinlock.
+    // This yield is an attempt to dissallow the threadpool user from starving
+    // the threadpool by always holding the 'task_lock'. This could accidentaly
+    // happen if the user invokes this method repitedly in a spinlock fashion.
     std::this_thread::yield();
 
     // Return the working status.
@@ -156,7 +158,7 @@ inline bool ThreadPool::working() const noexcept
 
 inline std::size_t ThreadPool::jobs() const noexcept
 {
-    std::unique_lock<std::mutex> lock(task_lock);
+    std::lock_guard<std::mutex> lock(task_lock);
     return tasks.size();
 }
 
@@ -167,8 +169,7 @@ inline std::size_t ThreadPool::threadCount() const noexcept
 
 inline void ThreadPool::enqueue(std::function<void()> task)
 {
-    std::unique_lock<std::mutex> lock(task_lock);
-    poolWorking = true;
+    std::lock_guard<std::mutex> lock(task_lock); poolWorking = true;
     tasks.emplace(std::move(task));
     cv.notify_one();
 }
@@ -177,9 +178,9 @@ template <typename T>
 inline auto ThreadPool::enqueue(T task) -> std::future<decltype(task())>
 {
     // Queue up the task.
-    std::lock_guard<std::mutex> lock(task_lock);
-    poolWorking = true;
-    auto wrapper = std::make_shared<std::packaged_task<decltype(task())()>>(std::move(task));
+    std::lock_guard<std::mutex> lock(task_lock); poolWorking = true;
+    using Task = std::packaged_task<decltype(task())()>;
+    auto wrapper = std::make_shared<Task>(std::move(task));
     auto future = wrapper->get_future();
     tasks.emplace( [=]() { (*wrapper)(); } );
     cv.notify_one();
